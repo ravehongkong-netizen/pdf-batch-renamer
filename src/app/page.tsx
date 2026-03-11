@@ -1,136 +1,325 @@
 "use client";
-import React, { useState } from 'react';
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import JSZip from 'jszip';
+
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import JSZip from "jszip";
+import { useDropzone } from "react-dropzone";
 import { pdfToCanvases } from "@/lib/pdf-to-canvases";
+import { createOcrWorker, recognizeCanvas } from "@/lib/ocr";
+
+type FileResult = {
+  file: File;
+  text?: string;
+  date?: string | null;
+  fileNo?: string | null;
+  id?: string | null;
+  error?: string | null;
+};
+
+const DATE_REGEX = /\b\d{4}-\d{2}-\d{2}\b/;
+const FILE_NO_REGEX = /\bACQ\d+-\d+\b/;
+const ID_REGEX = /\b\d{6}\b/;
 
 export default function Home() {
-  const [status, setStatus] = useState('');
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [results, setResults] = useState<FileResult[]>([]);
+  const [status, setStatus] = useState<string>("READY");
+  const [progress, setProgress] = useState<number>(0);
   const [loading, setLoading] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  // 初始化 API
-  const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-  const genAI = new GoogleGenerativeAI(apiKey || "");
+  useEffect(() => {
+    const savedKey = window.localStorage.getItem("pdf_batch_renamer_api_key");
+    if (savedKey) setApiKeyInput(savedKey);
+  }, []);
 
-  const fileToGenerativePart = async (file: Blob, mimeType: string) => {
-    const base64 = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
-      reader.onerror = () => reject(new Error("Failed to read file."));
-      reader.readAsDataURL(file);
-    });
-    return { inlineData: { data: base64, mimeType } };
+  useEffect(() => {
+    window.localStorage.setItem("pdf_batch_renamer_api_key", apiKeyInput);
+  }, [apiKeyInput]);
+
+  const onDrop = useCallback((acceptedFiles: File[]) => {
+    const pdfFiles = acceptedFiles.filter((f) =>
+      f.name.toLowerCase().endsWith(".pdf")
+    );
+    setFiles(pdfFiles);
+    setResults([]);
+    setDownloadUrl(null);
+    setStatus(
+      pdfFiles.length
+        ? `已選擇 ${pdfFiles.length} 份 PDF，請點「開始 OCR & 解析」`
+        : "尚未加入 PDF。"
+    );
+  }, []);
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop,
+    accept: { "application/pdf": [".pdf"] },
+    multiple: true,
+    disabled: loading,
+  });
+
+  const totalSteps = useMemo(
+    () => (files.length > 0 ? files.length : 1),
+    [files.length]
+  );
+
+  const extractFields = (text: string) => {
+    const date = text.match(DATE_REGEX)?.[0] ?? null;
+    const fileNo = text.match(FILE_NO_REGEX)?.[0] ?? null;
+    const id = text.match(ID_REGEX)?.[0] ?? null;
+    return { date, fileNo, id };
   };
 
-  const extractJsonObject = (raw: string) => {
-    const text = raw.replace(/```json|```/g, "").trim();
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start === -1 || end === -1 || end <= start) {
-      throw new Error("AI response did not contain a JSON object.");
-    }
-    return JSON.parse(text.slice(start, end + 1));
-  };
-
-  const pdfToPngBlob = async (file: File) => {
-    const pdfData = await file.arrayBuffer();
-    const canvases = await pdfToCanvases(pdfData, {
-      scale: 2,
-      onPageRendered: ({ pageIndex, pageCount }) => {
-        setStatus(`🖼️ 轉換 PDF 頁面中... (${pageIndex + 1}/${pageCount})`);
-      },
-    });
-    if (canvases.length === 0) throw new Error("PDF has no pages.");
-
-    // Default: use first page to keep it fast (can be extended to multi-page).
-    const first = canvases[0];
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      first.toBlob((b) => (b ? resolve(b) : reject(new Error("Failed to export canvas."))), "image/png");
-    });
-    return blob;
-  };
-
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (!files || files.length === 0 || !apiKey) {
-      if (!apiKey) setStatus("❌ 找不到 API Key，請檢查 .env.local 並重啟 npm run dev");
+  const handleProcess = useCallback(async () => {
+    if (!files.length) {
+      setStatus("請先拖放或選擇至少一份 PDF。");
       return;
     }
 
     setLoading(true);
-    setStatus('🚀 AI 正在識別維修單資料...');
+    setError(null);
+    setStatus("🚀 開始 OCR 與正則解析...");
+    setProgress(0);
+    setResults([]);
     setDownloadUrl(null);
+
     const zip = new JSZip();
 
     try {
-      // 重點：模型名稱改為完整路徑 "models/gemini-1.5-flash"
-      const model = genAI.getGenerativeModel({ model: "models/gemini-1.5-flash" });
+      const worker = await createOcrWorker({
+        onProgress: (m) => {
+          if (m.status) {
+            setStatus(`🧠 Tesseract: ${m.status} ${(m.progress ?? 0) * 100}%`);
+          }
+        },
+      });
+
+      const nextResults: FileResult[] = [];
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        let imageBlob: Blob;
-        let imageMime = "image/png";
+        setStatus(`📄 讀取第 ${i + 1}/${files.length} 份：${file.name}`);
 
-        if (file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")) {
-          setStatus(`📄 讀取 PDF：${file.name}`);
-          imageBlob = await pdfToPngBlob(file);
-        } else if (file.type.startsWith("image/")) {
-          imageBlob = file;
-          imageMime = file.type;
-        } else {
-          throw new Error(`Unsupported file type: ${file.type || file.name}`);
+        try {
+          const pdfData = await file.arrayBuffer();
+          const canvases = await pdfToCanvases(pdfData, {
+            scale: 2,
+            onPageRendered: ({ pageIndex, pageCount }) => {
+              setStatus(
+                `🖼️ PDF 轉圖片中：${file.name} (${pageIndex + 1}/${pageCount})`
+              );
+            },
+          });
+
+          if (!canvases.length) {
+            throw new Error("PDF 沒有任何頁面。");
+          }
+
+          const firstPage = canvases[0];
+          const { text } = await recognizeCanvas(worker, firstPage);
+          const { date, fileNo, id } = extractFields(text);
+
+          let newName: string;
+          if (date && fileNo && id) {
+            newName = `${date}_${fileNo}_${id}.pdf`;
+          } else {
+            const base = file.name.replace(/\.pdf$/i, "");
+            newName = `${base}_UNPARSED.pdf`;
+          }
+
+          zip.file(newName, file);
+
+          nextResults.push({
+            file,
+            text,
+            date,
+            fileNo,
+            id,
+            error:
+              date && fileNo && id
+                ? null
+                : "未能完整匹配到三個欄位（日期/檔案號碼/ID）。",
+          });
+
+          setResults([...nextResults]);
+        } catch (err: any) {
+          console.error(err);
+          nextResults.push({
+            file,
+            error: err?.message ?? "未知錯誤",
+          });
+          setResults([...nextResults]);
         }
 
-        const imagePart = await fileToGenerativePart(imageBlob, imageMime);
-        
-        const prompt = `你是一個專業的資料提取員。請從這張維修報告中提取以下資訊：
-        1. 服務日期 (請將 DD-MM-YYYY 格式轉換為 YYYY-MM-DD)
-        2. 檔案號碼 (File No.)
-        3. ID
-        
-        請嚴格只回傳 JSON，例如：{"date": "2025-10-30", "fileNo": "ACQ68-42121", "id": "51085"}`;
-
-        const result = await model.generateContent([prompt, imagePart]);
-        const response = await result.response;
-        const data = extractJsonObject(response.text());
-
-        // 命名格式：2025-10-30_ACQ68-42121_51085.pdf
-        const newName = `${data.date}_${data.fileNo}_${data.id}.pdf`;
-        zip.file(newName, file);
-        setStatus(`✅ 已辨識: ${newName}`);
+        setProgress(((i + 1) / totalSteps) * 100);
       }
 
       const content = await zip.generateAsync({ type: "blob" });
       setDownloadUrl(URL.createObjectURL(content));
-      setStatus('🎊 處理成功！請點擊按鈕下載。');
-    } catch (error: any) {
-      console.error(error);
-      setStatus(`❌ 錯誤: ${error.message}`);
+      setStatus("🎊 完成！請下載已改名 ZIP 檔。");
+    } catch (err: any) {
+      console.error(err);
+      setError(err?.message ?? "處理過程中發生錯誤。");
+      setStatus("❌ 發生錯誤，請稍後再試。");
     } finally {
       setLoading(false);
     }
-  };
+  }, [files, totalSteps]);
+
+  const handleClear = useCallback(() => {
+    setFiles([]);
+    setResults([]);
+    setDownloadUrl(null);
+    setProgress(0);
+    setStatus("READY");
+    setError(null);
+  }, []);
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-4">
-      <div className="bg-white p-10 rounded-3xl shadow-xl w-full max-w-md text-center border border-gray-100">
-        <h1 className="text-2xl font-black text-gray-800 mb-6">AI PDF 批量改名</h1>
-        
-        <label className={`block w-full py-12 border-4 border-dashed rounded-2xl cursor-pointer transition ${loading ? 'bg-gray-50 border-gray-300' : 'bg-indigo-50 border-indigo-200 hover:bg-indigo-100'}`}>
-          <span className="text-indigo-600 font-bold">{loading ? 'AI 正在分析...' : '點擊上傳維修單'}</span>
-          <input type="file" multiple accept="application/pdf,image/*" onChange={handleFileUpload} disabled={loading} className="hidden" />
-        </label>
+    <main className="min-h-screen flex items-center justify-center bg-background px-4 py-8">
+      <div className="w-full max-w-3xl space-y-6">
+        <header className="space-y-2 text-center">
+          <h1 className="text-2xl font-bold tracking-tight">
+            PDF Batch Renamer (OCR)
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            拖放多個 PDF → 前端 Tesseract.js OCR（含中文）→ 正則抽取日期 / 檔案號碼 / ID → ZIP 批量改名下載。
+          </p>
+        </header>
 
-        <div className="mt-6 p-4 bg-gray-900 rounded-xl min-h-[60px] flex items-center justify-center">
-          <p className="text-xs text-green-400 font-mono break-all">{status || "READY"}</p>
-        </div>
+        <section className="rounded-xl border bg-card p-4 shadow-sm space-y-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <label className="text-sm font-medium flex items-center gap-2">
+              API Key
+              <span className="text-xs text-muted-foreground">
+                （目前僅作為預留欄位，Tesseract OCR 不需 API）
+              </span>
+            </label>
+            <input
+              type="password"
+              value={apiKeyInput}
+              onChange={(e) => setApiKeyInput(e.target.value)}
+              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-64"
+              placeholder="輸入未來要用的 API Key"
+            />
+          </div>
+        </section>
 
-        {downloadUrl && (
-          <a href={downloadUrl} download="Renamed_Files.zip" className="mt-6 block w-full bg-green-600 text-white py-4 rounded-xl font-bold shadow-lg hover:bg-green-700 transition">
-            📥 下載已改名壓縮檔 (.zip)
-          </a>
-        )}
+        <section className="rounded-xl border bg-card p-4 shadow-sm space-y-4">
+          <div
+            {...getRootProps()}
+            className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-10 text-center transition ${
+              loading
+                ? "border-muted bg-muted/40 text-muted-foreground"
+                : isDragActive
+                ? "border-primary bg-primary/5 text-primary"
+                : "border-muted-foreground/30 hover:border-primary/60 hover:bg-muted/40"
+            }`}
+          >
+            <input {...getInputProps()} />
+            <p className="text-sm font-medium">
+              {isDragActive
+                ? "放開滑鼠以上傳 PDF"
+                : "拖放 PDF 到此處，或點擊選擇檔案"}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              建議一次 1–10 份 PDF 測試；速度與頁數與解析度有關。
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleProcess}
+              disabled={loading || !files.length}
+              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {loading ? "處理中..." : "開始 OCR & 解析"}
+            </button>
+            <button
+              type="button"
+              onClick={handleClear}
+              disabled={loading && !files.length}
+              className="inline-flex items-center justify-center rounded-md border bg-background px-4 py-2 text-sm font-medium text-foreground shadow-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              清空
+            </button>
+            {downloadUrl && (
+              <a
+                href={downloadUrl}
+                download="Renamed_Files.zip"
+                className="inline-flex items-center justify-center rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white shadow hover:bg-emerald-700"
+              >
+                📥 下載已改名 ZIP
+              </a>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>進度</span>
+              <span>{Math.round(progress)}%</span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full bg-primary transition-[width]"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-md bg-black px-3 py-2 text-xs font-mono text-emerald-400">
+            {status}
+          </div>
+          {error && (
+            <div className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {error}
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-xl border bg-card p-4 shadow-sm space-y-3">
+          <h2 className="text-sm font-semibold">結果</h2>
+          <p className="text-xs text-muted-foreground">
+            正則：日期 YYYY-MM-DD，檔案號碼 ACQ\d+-\d+，ID \d{6}。
+            目標檔名：{"{date}_{filename}_{ID}.pdf"}（例如：
+            2026-01-06_ACQ68-42200_151653.pdf）
+          </p>
+
+          {!results.length && (
+            <p className="text-xs text-muted-foreground">尚未加入 PDF。</p>
+          )}
+
+          {!!results.length && (
+            <div className="space-y-2 max-h-64 overflow-y-auto text-xs">
+              {results.map((r) => (
+                <div
+                  key={r.file.name + r.error}
+                  className="rounded-md border bg-background px-3 py-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium truncate">{r.file.name}</span>
+                    {r.error ? (
+                      <span className="text-[11px] text-destructive">
+                        {r.error}
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-emerald-600">
+                        ✅ 已匹配
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 grid grid-cols-1 gap-1 text-[11px] sm:grid-cols-3">
+                    <span>日期：{r.date ?? "—"}</span>
+                    <span>檔案號碼：{r.fileNo ?? "—"}</span>
+                    <span>ID：{r.id ?? "—"}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       </div>
     </main>
   );
