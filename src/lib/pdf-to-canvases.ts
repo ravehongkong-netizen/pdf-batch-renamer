@@ -1,14 +1,19 @@
-import type { PDFDocumentProxy } from "pdfjs-dist"
+import type { PDFDocumentProxy } from "pdfjs-dist/types/src/display/api"
 
-let pdfjsReady: Promise<typeof import("pdfjs-dist")> | null = null
+let pdfjsReady: Promise<typeof import("pdfjs-dist/legacy/build/pdf.mjs")> | null =
+  null
 
 async function getPdfjs() {
   if (!pdfjsReady) {
-    pdfjsReady = import("pdfjs-dist").then((pdfjs) => {
-      // Avoid bundling/minifying the worker in Next.js 14 builds.
-      // Load the worker from a CDN at runtime instead.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ;(pdfjs as any).GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${(pdfjs as any).version}/pdf.worker.min.js`
+    // Use the browser-friendly legacy build of pdf.js to avoid
+    // Node-specific shims causing runtime errors in the browser.
+    pdfjsReady = import("pdfjs-dist/legacy/build/pdf.mjs").then((pdfjs) => {
+      // pdf.js v5 removed `disableWorker`; configure the worker explicitly.
+      // Using a CDN keeps the bundle small and avoids Next.js worker bundling edge cases.
+      if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+        pdfjs.GlobalWorkerOptions.workerSrc =
+          "https://unpkg.com/pdfjs-dist@5.5.207/legacy/build/pdf.worker.min.mjs"
+      }
       return pdfjs
     })
   }
