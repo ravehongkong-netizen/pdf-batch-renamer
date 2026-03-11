@@ -22,6 +22,7 @@ const ID_REGEX = /\b\d{6}\b/;
 export default function Home() {
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [apiKeySaved, setApiKeySaved] = useState(false);
+  const [resolvedModel, setResolvedModel] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [results, setResults] = useState<FileResult[]>([]);
   const [status, setStatus] = useState<string>("READY");
@@ -36,19 +37,84 @@ export default function Home() {
       setApiKeyInput(savedKey);
       setApiKeySaved(true);
     }
+    const savedModel = window.localStorage.getItem("pdf_batch_renamer_model");
+    if (savedModel) setResolvedModel(savedModel);
   }, []);
 
-  const handleSaveApiKey = useCallback(() => {
-    const k = apiKeyInput.trim();
-    if (!k) {
-      setApiKeySaved(false);
-      setError("請先輸入 API Key。");
-      return;
+  const listModels = async (apiKey: string) => {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(
+        apiKey
+      )}`
+    );
+    const json = await res.json();
+    if (!res.ok) {
+      const msg =
+        json?.error?.message ??
+        "無法列出模型清單。請確認這是 Google AI Studio 的 Gemini API Key。";
+      throw new Error(msg);
     }
-    window.localStorage.setItem("pdf_batch_renamer_api_key", k);
-    setApiKeySaved(true);
-    setError(null);
-    setStatus("✅ API Key 已儲存。");
+    return (json?.models ?? []) as Array<{
+      name?: string;
+      supportedGenerationMethods?: string[];
+    }>;
+  };
+
+  const pickModelFromList = (models: Array<{ name?: string; supportedGenerationMethods?: string[] }>) => {
+    const candidates = models
+      .filter((m) => m?.name && (m.supportedGenerationMethods ?? []).includes("generateContent"))
+      .map((m) => m.name as string);
+
+    // Prefer vision-capable Gemini models when available.
+    const preferredOrder = [
+      "models/gemini-1.5-flash",
+      "models/gemini-1.5-flash-latest",
+      "models/gemini-1.5-pro",
+      "models/gemini-1.5-pro-latest",
+      "models/gemini-1.0-pro-vision-latest",
+      "models/gemini-pro-vision",
+    ];
+
+    for (const p of preferredOrder) {
+      if (candidates.includes(p)) return p;
+    }
+    return candidates[0] ?? null;
+  };
+
+  const handleSaveApiKey = useCallback(() => {
+    (async () => {
+      const k = apiKeyInput.trim();
+      if (!k) {
+        setApiKeySaved(false);
+        setResolvedModel(null);
+        window.localStorage.removeItem("pdf_batch_renamer_model");
+        setError("請先輸入 API Key。");
+        return;
+      }
+
+      setStatus("🔎 正在驗證 API Key 與可用模型...");
+      const models = await listModels(k);
+      const picked = pickModelFromList(models);
+      if (!picked) {
+        throw new Error(
+          "此 API Key 沒有任何可用的 generateContent 模型。請改用 Google AI Studio 的 Gemini API Key。"
+        );
+      }
+
+      window.localStorage.setItem("pdf_batch_renamer_api_key", k);
+      window.localStorage.setItem("pdf_batch_renamer_model", picked);
+      setResolvedModel(picked);
+      setApiKeySaved(true);
+      setError(null);
+      setStatus(`✅ API Key 已儲存（模型：${picked.replace(/^models\//, "")}）。`);
+    })().catch((e: any) => {
+      console.error(e);
+      setApiKeySaved(false);
+      setResolvedModel(null);
+      window.localStorage.removeItem("pdf_batch_renamer_model");
+      setError(e?.message ?? "API Key 驗證失敗。");
+      setStatus("❌ API Key 驗證失敗。");
+    });
   }, [apiKeyInput]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -99,34 +165,34 @@ export default function Home() {
     if (!key) throw new Error("請先在上方輸入並儲存 Gemini API Key。");
 
     const genAI = new GoogleGenerativeAI(key);
-    // Different API keys / regions may expose different model IDs.
-    // Use a safe fallback list and avoid the "models/" prefix for v1beta.
-    const candidateModels = [
-      "gemini-1.5-flash",
-      "gemini-1.5-flash-latest",
-      "gemini-1.5-pro",
-      "gemini-1.5-pro-latest",
-    ];
+    const modelId =
+      resolvedModel ??
+      window.localStorage.getItem("pdf_batch_renamer_model") ??
+      "models/gemini-1.5-flash";
 
     const imagePart = await blobToGenerativePart(image, "image/png");
     const prompt =
       "你是一個OCR。請把圖片中的所有文字完整轉成純文字輸出，保留原本換行。不要解釋、不要加Markdown、不要加JSON，只輸出文字內容。";
 
-    let lastErr: unknown = null;
-    for (const modelId of candidateModels) {
-      try {
-        const model = genAI.getGenerativeModel({ model: modelId });
-        const result = await model.generateContent([prompt, imagePart]);
-        const text = result.response.text();
-        return text.replace(/```/g, "").trim();
-      } catch (e) {
-        lastErr = e;
-      }
+    try {
+      const model = genAI.getGenerativeModel({ model: modelId });
+      const result = await model.generateContent([prompt, imagePart]);
+      const text = result.response.text();
+      return text.replace(/```/g, "").trim();
+    } catch (e: any) {
+      // If model fails (e.g. 404), try to refresh model list once.
+      const models = await listModels(key);
+      const picked = pickModelFromList(models);
+      if (!picked) throw new Error(e?.message ?? "Gemini OCR failed.");
+
+      window.localStorage.setItem("pdf_batch_renamer_model", picked);
+      setResolvedModel(picked);
+
+      const model = genAI.getGenerativeModel({ model: picked });
+      const result = await model.generateContent([prompt, imagePart]);
+      const text = result.response.text();
+      return text.replace(/```/g, "").trim();
     }
-    const msg =
-      (lastErr as any)?.message ??
-      "Gemini OCR failed (no supported model for this API key).";
-    throw new Error(msg);
   };
 
   const handleProcess = useCallback(async () => {
@@ -287,6 +353,12 @@ export default function Home() {
           </div>
           <div className="text-[11px] text-muted-foreground">
             狀態：{apiKeySaved ? "✅ 已儲存" : "未儲存"}
+            {apiKeySaved && resolvedModel ? (
+              <>
+                {" "}
+                · 模型：{resolvedModel.replace(/^models\//, "")}
+              </>
+            ) : null}
           </div>
         </section>
 
