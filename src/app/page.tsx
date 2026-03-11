@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import JSZip from "jszip";
 import { useDropzone } from "react-dropzone";
 import { pdfToCanvases } from "@/lib/pdf-to-canvases";
@@ -20,6 +21,7 @@ const ID_REGEX = /\b\d{6}\b/;
 
 export default function Home() {
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [apiKeySaved, setApiKeySaved] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
   const [results, setResults] = useState<FileResult[]>([]);
   const [status, setStatus] = useState<string>("READY");
@@ -30,11 +32,23 @@ export default function Home() {
 
   useEffect(() => {
     const savedKey = window.localStorage.getItem("pdf_batch_renamer_api_key");
-    if (savedKey) setApiKeyInput(savedKey);
+    if (savedKey) {
+      setApiKeyInput(savedKey);
+      setApiKeySaved(true);
+    }
   }, []);
 
-  useEffect(() => {
-    window.localStorage.setItem("pdf_batch_renamer_api_key", apiKeyInput);
+  const handleSaveApiKey = useCallback(() => {
+    const k = apiKeyInput.trim();
+    if (!k) {
+      setApiKeySaved(false);
+      setError("請先輸入 API Key。");
+      return;
+    }
+    window.localStorage.setItem("pdf_batch_renamer_api_key", k);
+    setApiKeySaved(true);
+    setError(null);
+    setStatus("✅ API Key 已儲存。");
   }, [apiKeyInput]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -70,13 +84,30 @@ export default function Home() {
     return { date, fileNo, id };
   };
 
-  const ocrGcv = async (image: Blob) => {
-    const fd = new FormData();
-    fd.set("file", image, "page.png");
-    const res = await fetch("/api/ocr/gcv", { method: "POST", body: fd });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json?.error ?? "OCR request failed");
-    return String(json?.text ?? "");
+  const blobToGenerativePart = async (blob: Blob, mimeType: string) => {
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve((reader.result as string).split(",")[1]);
+      reader.onerror = () => reject(new Error("Failed to read image."));
+      reader.readAsDataURL(blob);
+    });
+    return { inlineData: { data: base64, mimeType } };
+  };
+
+  const ocrWithGemini = async (image: Blob) => {
+    const key = apiKeyInput.trim();
+    if (!key) throw new Error("請先在上方輸入並儲存 Gemini API Key。");
+
+    const genAI = new GoogleGenerativeAI(key);
+    const model = genAI.getGenerativeModel({ model: "models/gemini-1.5-flash" });
+
+    const imagePart = await blobToGenerativePart(image, "image/png");
+    const prompt =
+      "你是一個OCR。請把圖片中的所有文字完整轉成純文字輸出，保留原本換行。不要解釋、不要加Markdown、不要加JSON，只輸出文字內容。";
+
+    const result = await model.generateContent([prompt, imagePart]);
+    const text = result.response.text();
+    return text.replace(/```/g, "").trim();
   };
 
   const handleProcess = useCallback(async () => {
@@ -123,8 +154,8 @@ export default function Home() {
               "image/png"
             );
           });
-          setStatus(`☁️ Google Vision OCR 辨識中：${file.name}`);
-          const text = await ocrGcv(imageBlob);
+          setStatus(`🤖 Gemini OCR 辨識中：${file.name}`);
+          const text = await ocrWithGemini(imageBlob);
           const { date, fileNo, id } = extractFields(text);
 
           let newName: string;
@@ -191,25 +222,52 @@ export default function Home() {
             PDF Batch Renamer (OCR)
           </h1>
           <p className="text-sm text-muted-foreground">
-            拖放多個 PDF → 前端 Tesseract.js OCR（含中文）→ 正則抽取日期 / 檔案號碼 / ID → ZIP 批量改名下載。
+            拖放多個 PDF → 轉圖片 → 用家自填 Gemini API Key 進行 OCR → 正則抽取日期 / 檔案號碼 / ID → ZIP 批量改名下載。
           </p>
         </header>
 
-        <section className="rounded-xl border bg-card p-4 shadow-sm space-y-4">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <label className="text-sm font-medium flex items-center gap-2">
-              API Key
-              <span className="text-xs text-muted-foreground">
-                （用於雲端 OCR；實際 Secret 請放在 Vercel 環境變數）
-              </span>
-            </label>
-            <input
-              type="password"
-              value={apiKeyInput}
-              onChange={(e) => setApiKeyInput(e.target.value)}
-              className="mt-1 w-full rounded-md border bg-background px-3 py-1.5 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:w-64"
-              placeholder="輸入未來要用的 API Key"
-            />
+        <section className="rounded-xl border bg-card p-5 shadow-sm space-y-3">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <span>🔑</span>
+            <span>Gemini API 設定</span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            請輸入你的 Gemini API Key。你可以到{" "}
+            <a
+              className="underline underline-offset-2 hover:text-foreground"
+              href="https://aistudio.google.com/"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Google AI Studio
+            </a>{" "}
+            免費獲取。
+          </p>
+
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="flex-1">
+              <input
+                type="password"
+                value={apiKeyInput}
+                onChange={(e) => {
+                  setApiKeyInput(e.target.value);
+                  setApiKeySaved(false);
+                }}
+                className="w-full rounded-md border bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                placeholder="輸入 Gemini API Key（只會儲存在你的瀏覽器）"
+                autoComplete="off"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleSaveApiKey}
+              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow hover:bg-primary/90"
+            >
+              儲存
+            </button>
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            狀態：{apiKeySaved ? "✅ 已儲存" : "未儲存"}
           </div>
         </section>
 
