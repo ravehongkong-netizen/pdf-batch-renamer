@@ -4,7 +4,6 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import JSZip from "jszip";
 import { useDropzone } from "react-dropzone";
 import { pdfToCanvases } from "@/lib/pdf-to-canvases";
-import { createOcrWorker, recognizeCanvas } from "@/lib/ocr";
 
 type FileResult = {
   file: File;
@@ -71,6 +70,15 @@ export default function Home() {
     return { date, fileNo, id };
   };
 
+  const ocrGcv = async (image: Blob) => {
+    const fd = new FormData();
+    fd.set("file", image, "page.png");
+    const res = await fetch("/api/ocr/gcv", { method: "POST", body: fd });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json?.error ?? "OCR request failed");
+    return String(json?.text ?? "");
+  };
+
   const handleProcess = useCallback(async () => {
     if (!files.length) {
       setStatus("請先拖放或選擇至少一份 PDF。");
@@ -87,14 +95,6 @@ export default function Home() {
     const zip = new JSZip();
 
     try {
-      const worker = await createOcrWorker({
-        onProgress: (m) => {
-          if (m.status) {
-            setStatus(`🧠 Tesseract: ${m.status} ${(m.progress ?? 0) * 100}%`);
-          }
-        },
-      });
-
       const nextResults: FileResult[] = [];
 
       for (let i = 0; i < files.length; i++) {
@@ -117,7 +117,14 @@ export default function Home() {
           }
 
           const firstPage = canvases[0];
-          const { text } = await recognizeCanvas(worker, firstPage);
+          const imageBlob = await new Promise<Blob>((resolve, reject) => {
+            firstPage.toBlob(
+              (b) => (b ? resolve(b) : reject(new Error("Failed to export image."))),
+              "image/png"
+            );
+          });
+          setStatus(`☁️ Google Vision OCR 辨識中：${file.name}`);
+          const text = await ocrGcv(imageBlob);
           const { date, fileNo, id } = extractFields(text);
 
           let newName: string;
@@ -193,7 +200,7 @@ export default function Home() {
             <label className="text-sm font-medium flex items-center gap-2">
               API Key
               <span className="text-xs text-muted-foreground">
-                （目前僅作為預留欄位，Tesseract OCR 不需 API）
+                （用於雲端 OCR；實際 Secret 請放在 Vercel 環境變數）
               </span>
             </label>
             <input
