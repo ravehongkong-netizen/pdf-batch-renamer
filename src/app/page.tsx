@@ -99,15 +99,34 @@ export default function Home() {
     if (!key) throw new Error("請先在上方輸入並儲存 Gemini API Key。");
 
     const genAI = new GoogleGenerativeAI(key);
-    const model = genAI.getGenerativeModel({ model: "models/gemini-1.5-flash" });
+    // Different API keys / regions may expose different model IDs.
+    // Use a safe fallback list and avoid the "models/" prefix for v1beta.
+    const candidateModels = [
+      "gemini-1.5-flash",
+      "gemini-1.5-flash-latest",
+      "gemini-1.5-pro",
+      "gemini-1.5-pro-latest",
+    ];
 
     const imagePart = await blobToGenerativePart(image, "image/png");
     const prompt =
       "你是一個OCR。請把圖片中的所有文字完整轉成純文字輸出，保留原本換行。不要解釋、不要加Markdown、不要加JSON，只輸出文字內容。";
 
-    const result = await model.generateContent([prompt, imagePart]);
-    const text = result.response.text();
-    return text.replace(/```/g, "").trim();
+    let lastErr: unknown = null;
+    for (const modelId of candidateModels) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelId });
+        const result = await model.generateContent([prompt, imagePart]);
+        const text = result.response.text();
+        return text.replace(/```/g, "").trim();
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    const msg =
+      (lastErr as any)?.message ??
+      "Gemini OCR failed (no supported model for this API key).";
+    throw new Error(msg);
   };
 
   const handleProcess = useCallback(async () => {
