@@ -383,7 +383,7 @@ export default function Home() {
             請輸入你的 Gemini API Key。你可以到{" "}
             <a
               className="underline underline-offset-2 hover:text-foreground"
-              href="https://aistudio.google.com/"
+              href="https://aistudio.google.com/api-keys"
               target="_blank"
               rel="noreferrer"
             >
