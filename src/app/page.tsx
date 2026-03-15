@@ -20,6 +20,22 @@ const FILE_NO_REGEX = /\bACQ\d+-\d+\b/;
 const ID_REGEX = /\b\d{6}\b/;
 const DATE_DD_MM_YYYY_REGEX = /\b\d{2}-\d{2}-\d{4}\b/;
 
+function isQuotaExceeded(err: unknown): boolean {
+  const msg = String((err as any)?.message ?? "").toLowerCase();
+  const status = (err as any)?.status ?? (err as any)?.code;
+  return (
+    status === 429 ||
+    status === 503 ||
+    msg.includes("quota") ||
+    msg.includes("rate limit") ||
+    msg.includes("resource exhausted") ||
+    msg.includes("resource_exhausted")
+  );
+}
+
+const QUOTA_MESSAGE =
+  "免費 API 額度已用完。請稍後再試，或前往 Google AI Studio 查看使用情況與升級選項。";
+
 export default function Home() {
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [apiKeySaved, setApiKeySaved] = useState(false);
@@ -206,6 +222,8 @@ export default function Home() {
       const result = await model.generateContent([prompt, imagePart]);
       return result.response.text();
     } catch (e: any) {
+      // Quota/rate limit: do not retry, rethrow so caller can stop and prompt.
+      if (isQuotaExceeded(e)) throw e;
       // If model fails (e.g. 404), try to refresh model list once.
       const models = await listModels(key);
       const picked = pickModelFromList(models);
@@ -309,11 +327,15 @@ export default function Home() {
           setResults([...nextResults]);
         } catch (err: any) {
           console.error(err);
-          nextResults.push({
-            file,
-            error: err?.message ?? "未知錯誤",
-          });
+          const errMsg = err?.message ?? "未知錯誤";
+          nextResults.push({ file, error: errMsg });
           setResults([...nextResults]);
+
+          if (isQuotaExceeded(err)) {
+            setError(QUOTA_MESSAGE);
+            setStatus("⚠️ 免費 API 額度已用完，已停止處理。");
+            break;
+          }
         }
 
         setProgress(((i + 1) / totalSteps) * 100);
@@ -361,7 +383,7 @@ export default function Home() {
             請輸入你的 Gemini API Key。你可以到{" "}
             <a
               className="underline underline-offset-2 hover:text-foreground"
-              href="https://aistudio.google.com/api-keys"
+              href="https://aistudio.google.com/"
               target="_blank"
               rel="noreferrer"
             >
@@ -401,6 +423,9 @@ export default function Home() {
               </>
             ) : null}
           </div>
+          <p className="text-[11px] text-amber-600/90 border border-amber-200/60 rounded px-2 py-1.5 bg-amber-50/50">
+            ⚠️ 免費額度用盡時會自動停止處理並提示，可前往 Google AI Studio 查看使用量。
+          </p>
         </section>
 
         <section className="rounded-xl border bg-card p-4 shadow-sm space-y-4">
