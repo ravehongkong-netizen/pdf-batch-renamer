@@ -23,35 +23,42 @@ const FILE_NO_REGEX = /\bACQ\d+-\d+\b/;
 const ID_REGEX = /\b\d{6}\b/;
 const DATE_DD_MM_YYYY_REGEX = /\b\d{2}-\d{2}-\d{4}\b/;
 
-/** 僅在錯誤明顯來自 Google Gemini API 時才視為「額度用完」，避免其他 API 的 429/503/文案誤判。 */
-function isGeminiQuotaExceeded(err: unknown): boolean {
-  const raw = String((err as any)?.message ?? err ?? "");
-  const msg = raw.toLowerCase();
-  const status = (err as any)?.status ?? (err as any)?.code;
-  const n = typeof status === "string" ? parseInt(status, 10) : Number(status);
+function isQuotaExceeded(err: unknown): boolean {
+  const e = err as any;
+  const msg = String(e?.message ?? e?.cause?.message ?? "").toLowerCase();
+  const nested = String(e?.error?.message ?? e?.response?.data?.error?.message ?? "").toLowerCase();
+  const combined = `${msg} ${nested}`;
 
-  const fromGemini =
-    msg.includes("generativelanguage.googleapis.com") ||
-    msg.includes("google generative ai") ||
-    /\[googlegenerativeai error\]/i.test(raw);
+  const http =
+    typeof e?.status === "number"
+      ? e.status
+      : typeof e?.code === "number" && e.code >= 400 && e.code < 600
+        ? e.code
+        : typeof e?.response?.status === "number"
+          ? e.response.status
+          : undefined;
 
-  if (!fromGemini) return false;
+  // 429：多數 API 表示請求過於頻繁／額度相關（含 SDK 把狀態寫在字串內的情況）
+  if (http === 429) return true;
+  if (/\[429\]|status\s*[:=]\s*429|:\s*429\s/mi.test(combined)) return true;
 
-  if (n === 429 || msg.includes("[429]")) return true;
-  if (msg.includes("resource exhausted") || msg.includes("resource_exhausted")) return true;
-  if (
-    msg.includes("quota") &&
-    (msg.includes("exceed") || msg.includes("limit") || msg.includes("exhausted"))
-  ) {
-    return true;
+  // 503 常見於維護／逾時，勿單獨當成「額度用完」
+  if (http === 503) {
+    return (
+      /quota|rate limit|resource exhausted|resource_exhausted|too many requests/i.test(
+        combined
+      )
+    );
   }
-  if (msg.includes("rate limit") && msg.includes("generativelanguage")) return true;
 
-  return false;
+  // 僅在訊息明確與額度／頻率限制相關時才判定（避免其他 API 的無關錯誤被誤判）
+  const quotaHints =
+    /quota exceeded|exceeded your quota|rate limit exceeded|rate-limit|too many requests|resource exhausted|resource_exhausted|billing|payment required/i;
+  return quotaHints.test(combined);
 }
 
 const QUOTA_MESSAGE =
-  "Gemini API 免費額度已用完或觸發頻率限制。請稍後再試，或前往 Google AI Studio 查看使用量與升級選項。";
+  "可能已達 API 使用上限或頻率限制。請稍後再試，或到服務商後台查看用量與方案。";
 
 export default function Home() {
   const [apiKeyInput, setApiKeyInput] = useState("");
@@ -270,7 +277,7 @@ ${
       return result.response.text();
     } catch (e: any) {
       // Quota/rate limit: do not retry, rethrow so caller can stop and prompt.
-      if (isGeminiQuotaExceeded(e)) throw e;
+      if (isQuotaExceeded(e)) throw e;
       // If model fails (e.g. 404), try to refresh model list once.
       const models = await listModels(key);
       const picked = pickModelFromList(models);
@@ -395,9 +402,9 @@ ${
           nextResults.push({ file, error: errMsg, outputFileName: undefined });
           setResults([...nextResults]);
 
-          if (isGeminiQuotaExceeded(err)) {
-            setError(QUOTA_MESSAGE);
-            setStatus("⚠️ Gemini API 額度／頻率限制，已停止處理。");
+          if (isQuotaExceeded(err)) {
+            setError(`${QUOTA_MESSAGE}\n（${errMsg}）`);
+            setStatus("⚠️ API 用量或頻率限制，已停止處理。");
             break;
           }
         }
@@ -510,7 +517,7 @@ ${
             ) : null}
           </div>
           <p className="text-[11px] text-amber-600/90 border border-amber-200/60 rounded px-2 py-1.5 bg-amber-50/50">
-            ⚠️ 若 Gemini API 觸發額度／頻率限制會自動停止並提示（僅辨識為 Google Gemini 錯誤時）。
+            ⚠️ 免費額度用盡時會自動停止處理並提示，可前往 Google AI Studio 查看使用量。
           </p>
         </section>
 
