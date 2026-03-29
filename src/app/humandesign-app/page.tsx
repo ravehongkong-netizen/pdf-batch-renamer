@@ -111,6 +111,7 @@ export default function HumanDesignAppPage() {
     let cross = "";
     let authority = "";
     const profileNums: number[] = [];
+    const extraNums: number[] = [];
 
     for (let i = (tongJi?.length ?? 0) - 1; i >= 2; i--) {
       const bVal = String(tongJi[i]?.[1] ?? "").trim();
@@ -124,15 +125,21 @@ export default function HumanDesignAppPage() {
           const v = tongJi[i]?.[k];
           profileNums.push(typeof v === "number" ? v : parseInt(String(v ?? "0"), 10) || 0);
         }
+        for (const k of [49, 50, 51, 52, 53, 54]) {
+          const v = tongJi[i]?.[k];
+          extraNums.push(typeof v === "number" ? v : parseInt(String(v ?? "0"), 10) || 0);
+        }
         break;
       }
     }
 
     let crossDesc = "";
+    let lunHuiDengFen = "";
     if (cross && lunHui) {
       for (let i = (lunHui?.length ?? 0) - 1; i >= 1; i--) {
         if (String(lunHui[i]?.[3] ?? "").trim() === cross) {
           crossDesc = String(lunHui[i]?.[4] ?? "");
+          lunHuiDengFen = String(lunHui[i]?.[0] ?? "");
           break;
         }
       }
@@ -144,8 +151,10 @@ export default function HumanDesignAppPage() {
       fenJi,
       cross,
       crossDesc,
+      lunHuiDengFen,
       authority,
       profileNums,
+      extraNums,
     };
   }, [data, d1]);
 
@@ -209,58 +218,59 @@ export default function HumanDesignAppPage() {
         </nav>
 
         <section className="flex-1 overflow-auto p-4">
-          {activeTab === "Index " && (
-            <div className="max-w-2xl space-y-6">
-              <div>
-                <label className="text-sm font-medium block mb-1">對象（D1）</label>
-                <input
-                  type="text"
-                  value={d1}
-                  onChange={(e) => setD1(e.target.value)}
-                  placeholder="輸入姓名，例如 Polly、Celian"
-                  className="w-full rounded-md border px-3 py-2"
-                  list="names-list"
-                />
-                <datalist id="names-list">
-                  {data["統計表"]?.slice(2, 552).map((row, i) => (
-                    <option key={i} value={String(row[1] ?? "").trim()} />
+          {activeTab === "Index " && data["Index "] && (
+            <div className="overflow-x-auto">
+              <datalist id="names-list">
+                {data["統計表"]?.slice(2, 552).map((row, i) => (
+                  <option key={i} value={String(row[1] ?? "").trim()} />
+                ))}
+              </datalist>
+              <table className="border-collapse text-sm" style={{ minWidth: "100%" }}>
+                <tbody>
+                  {data["Index "].map((row, ri) => (
+                    <tr key={ri}>
+                      {row.map((cell, ci) => {
+                        const isInput = ri === 0 && ci === 3;
+                        const baseVal = String(cell ?? "").trim();
+                        let displayVal = baseVal;
+                        if (computedIndex && d1.trim()) {
+                          if (ri === 0 && ci === 6) displayVal = computedIndex.type || baseVal;
+                          else if (ri === 0 && ci === 9) displayVal = computedIndex.profile || baseVal;
+                          else if (ri === 1 && ci === 2) displayVal = computedIndex.cross || baseVal;
+                          else if (ri === 1 && ci === 8) displayVal = computedIndex.fenJi || baseVal;
+                          else if (ri === 1 && ci >= 10 && ci <= 15) displayVal = String(computedIndex.profileNums[ci - 10] ?? baseVal);
+                          else if (ri === 2 && ci === 2) displayVal = computedIndex.crossDesc || baseVal;
+                          else if (ri === 2 && ci === 7) displayVal = computedIndex.lunHuiDengFen || baseVal;
+                          else if (ri === 2 && ci === 14) displayVal = computedIndex.authority || baseVal;
+                          else if (ri === 2 && ci >= 16 && ci <= 21) displayVal = String(computedIndex.extraNums?.[ci - 16] ?? baseVal);
+                        }
+                        return (
+                          <td
+                            key={ci}
+                            className={cn(
+                              "border px-1.5 py-0.5 align-top min-w-[60px]",
+                              isInput ? "border-2 border-red-500 bg-red-50/50" : "border-black"
+                            )}
+                          >
+                            {isInput ? (
+                              <input
+                                type="text"
+                                value={d1}
+                                onChange={(e) => setD1(e.target.value)}
+                                placeholder="輸入姓名"
+                                list="names-list"
+                                className="w-full min-w-0 bg-transparent border-0 p-0 text-inherit focus:outline-none focus:ring-0"
+                              />
+                            ) : (
+                              <span className="whitespace-pre-wrap block">{displayVal || "—"}</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
                   ))}
-                </datalist>
-              </div>
-
-              {computedIndex && d1.trim() && (
-                <div className="space-y-4 rounded-lg border p-4">
-                  <h2 className="font-semibold">依公式顯示結果</h2>
-                  <div className="grid gap-3 text-sm">
-                    <div>
-                      <span className="text-muted-foreground">類型：</span>
-                      <span>{computedIndex.type || "—"}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Profile：</span>
-                      <span>{computedIndex.profile || "—"}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">幾分人：</span>
-                      <span>{computedIndex.fenJi || "—"}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">輪回交叉：</span>
-                      <span>{computedIndex.cross || "—"}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">輪回交叉描述：</span>
-                      <p className="mt-1 text-muted-foreground whitespace-pre-wrap">
-                        {computedIndex.crossDesc || "—"}
-                      </p>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">內在權威：</span>
-                      <span>{computedIndex.authority || "—"}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
+                </tbody>
+              </table>
             </div>
           )}
 

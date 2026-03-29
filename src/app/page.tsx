@@ -12,6 +12,7 @@ type FileResult = {
   date?: string | null;
   fileNo?: string | null;
   id?: string | null;
+  tickColumn?: string | null;
   error?: string | null;
 };
 
@@ -47,6 +48,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [detectRedBoxTick, setDetectRedBoxTick] = useState(false);
 
   useEffect(() => {
     const savedKey = window.localStorage.getItem("pdf_batch_renamer_api_key");
@@ -195,7 +197,10 @@ export default function Home() {
     return { inlineData: { data: base64, mimeType } };
   };
 
-  const ocrWithGemini = async (image: Blob): Promise<string> => {
+  const ocrWithGemini = async (
+    image: Blob,
+    options: { detectRedBoxTick: boolean }
+  ): Promise<string> => {
     const key = apiKeyInput.trim();
     if (!key) throw new Error("請先在上方輸入並儲存 Gemini API Key。");
 
@@ -207,15 +212,28 @@ export default function Home() {
 
     const imagePart = await blobToGenerativePart(image, "image/png");
 
+    const tickBlock = options.detectRedBoxTick
+      ? `
+4) 紅框勾選：表單上若有一排畫在紅框內的勾選格，由左至右依序為 A、B、C、D、E。請判斷哪一格內有打勾（✓、✔、V、剔號等）。若沒有任何一格明顯有勾選，或無此區塊，tickColumn 請填 null。
+
+請嚴格只回傳 JSON（不要任何額外文字/Markdown）：
+{"date":"2025-12-22","fileNo":"ACQ68-42171","id":"151564","tickColumn":"A"}
+其中 tickColumn 只能是 "A"、"B"、"C"、"D"、"E" 之一，或 null。`
+      : "";
+
     const prompt = `你是一個專門讀取「維修報告單右上角欄位」的 OCR + 資料抽取助手。
 
 請只關注右上角的這三個欄位，並依序抽取：
 1) 服務日期：通常是 DD-MM-YYYY（例如 22-12-2025）。請轉成 YYYY-MM-DD（例如 2025-12-22）。
 2) 檔案號碼 File No.：格式為 ACQ\\d+-\\d+（例如 ACQ68-42171）。
-3) ID：六位數字 \\d{6}（例如 151564）。
+3) ID：六位數字 \\d{6}（例如 151564）。${tickBlock}
 
-請嚴格只回傳 JSON（不要任何額外文字/Markdown）：
-{"date":"2025-12-22","fileNo":"ACQ68-42171","id":"151564"}`;
+${
+  options.detectRedBoxTick
+    ? ""
+    : `請嚴格只回傳 JSON（不要任何額外文字/Markdown）：
+{"date":"2025-12-22","fileNo":"ACQ68-42171","id":"151564"}`
+}`;
 
     try {
       const model = genAI.getGenerativeModel({ model: modelId });
@@ -283,7 +301,7 @@ export default function Home() {
             );
           });
           setStatus(`🤖 Gemini 辨識右上角欄位中：${file.name}`);
-          const raw = await ocrWithGemini(imageBlob);
+          const raw = await ocrWithGemini(imageBlob, { detectRedBoxTick });
           const data = extractJsonObject(raw);
 
           const parsedText = String(raw ?? "").replace(/```/g, "").trim();
@@ -302,12 +320,24 @@ export default function Home() {
               ? (data.id.match(ID_REGEX)?.[0] ?? null)
               : extractFields(parsedText).id;
 
+          let tickColumn: string | null = null;
+          if (detectRedBoxTick) {
+            const rawTick = data?.tickColumn;
+            if (rawTick != null && rawTick !== "") {
+              const t = String(rawTick).toUpperCase().trim();
+              if (["A", "B", "C", "D", "E"].includes(t)) tickColumn = t;
+            }
+          }
+
+          const tickSuffix =
+            detectRedBoxTick && tickColumn ? `_${tickColumn}` : "";
+
           let newName: string;
           if (date && fileNo && id) {
-            newName = `${date}_${fileNo}_${id}.pdf`;
+            newName = `${date}_${fileNo}_${id}${tickSuffix}.pdf`;
           } else {
             const base = file.name.replace(/\.pdf$/i, "");
-            newName = `${base}_UNPARSED.pdf`;
+            newName = `${base}_UNPARSED${tickSuffix}.pdf`;
           }
 
           zip.file(newName, file);
@@ -318,6 +348,7 @@ export default function Home() {
             date,
             fileNo,
             id,
+            tickColumn: detectRedBoxTick ? tickColumn : undefined,
             error:
               date && fileNo && id
                 ? null
@@ -351,7 +382,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, [files, totalSteps]);
+  }, [files, totalSteps, detectRedBoxTick]);
 
   const handleClear = useCallback(() => {
     setFiles([]);
@@ -450,6 +481,20 @@ export default function Home() {
             </p>
           </div>
 
+          <label className="flex cursor-pointer items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 rounded border"
+              checked={detectRedBoxTick}
+              onChange={(e) => setDetectRedBoxTick(e.target.checked)}
+              disabled={loading}
+            />
+            <span>
+              識別紅框內勾選欄位（由左至右 A–E），並加在檔名最後（例如{" "}
+              <span className="font-mono text-xs">…_151653_B.pdf</span>）
+            </span>
+          </label>
+
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -505,8 +550,9 @@ export default function Home() {
           <h2 className="text-sm font-semibold">結果</h2>
           <p className="text-xs text-muted-foreground">
             正則：日期 YYYY-MM-DD，檔案號碼 ACQ\d+-\d+，ID \d{6}。
-            目標檔名：{"{date}_{filename}_{ID}.pdf"}（例如：
-            2026-01-06_ACQ68-42200_151653.pdf）
+            目標檔名：{"{date}_{fileNo}_{id}.pdf"}；若勾選紅框識別，則為{" "}
+            {"{date}_{fileNo}_{id}_{A|B|C|D|E}.pdf"}（例如：
+            2026-01-06_ACQ68-42200_151653_B.pdf）
           </p>
 
           {!results.length && (
@@ -532,10 +578,16 @@ export default function Home() {
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 grid grid-cols-1 gap-1 text-[11px] sm:grid-cols-3">
+                  <div className="mt-1 grid grid-cols-1 gap-1 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
                     <span>日期：{r.date ?? "—"}</span>
                     <span>檔案號碼：{r.fileNo ?? "—"}</span>
                     <span>ID：{r.id ?? "—"}</span>
+                    <span>
+                      紅框勾選：{" "}
+                      {r.tickColumn !== undefined
+                        ? r.tickColumn ?? "—"
+                        : "（未啟用）"}
+                    </span>
                   </div>
                 </div>
               ))}

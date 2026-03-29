@@ -28,7 +28,10 @@ export async function GET() {
 
     const buf = fs.readFileSync(filePath);
     const mod = await import("xlsx");
-    const XLSX = (mod as { default?: typeof mod }).default ?? mod;
+    type XlsxNs = typeof import("xlsx");
+    const XLSX: XlsxNs =
+      (mod as unknown as { default?: XlsxNs }).default ??
+      (mod as unknown as XlsxNs);
     const workbook = XLSX.read(buf, { type: "buffer", cellFormula: true });
 
     const result: Record<string, unknown[][]> = {};
