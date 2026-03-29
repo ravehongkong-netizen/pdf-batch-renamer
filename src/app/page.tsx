@@ -23,21 +23,35 @@ const FILE_NO_REGEX = /\bACQ\d+-\d+\b/;
 const ID_REGEX = /\b\d{6}\b/;
 const DATE_DD_MM_YYYY_REGEX = /\b\d{2}-\d{2}-\d{4}\b/;
 
-function isQuotaExceeded(err: unknown): boolean {
-  const msg = String((err as any)?.message ?? "").toLowerCase();
+/** 僅在錯誤明顯來自 Google Gemini API 時才視為「額度用完」，避免其他 API 的 429/503/文案誤判。 */
+function isGeminiQuotaExceeded(err: unknown): boolean {
+  const raw = String((err as any)?.message ?? err ?? "");
+  const msg = raw.toLowerCase();
   const status = (err as any)?.status ?? (err as any)?.code;
-  return (
-    status === 429 ||
-    status === 503 ||
-    msg.includes("quota") ||
-    msg.includes("rate limit") ||
-    msg.includes("resource exhausted") ||
-    msg.includes("resource_exhausted")
-  );
+  const n = typeof status === "string" ? parseInt(status, 10) : Number(status);
+
+  const fromGemini =
+    msg.includes("generativelanguage.googleapis.com") ||
+    msg.includes("google generative ai") ||
+    /\[googlegenerativeai error\]/i.test(raw);
+
+  if (!fromGemini) return false;
+
+  if (n === 429 || msg.includes("[429]")) return true;
+  if (msg.includes("resource exhausted") || msg.includes("resource_exhausted")) return true;
+  if (
+    msg.includes("quota") &&
+    (msg.includes("exceed") || msg.includes("limit") || msg.includes("exhausted"))
+  ) {
+    return true;
+  }
+  if (msg.includes("rate limit") && msg.includes("generativelanguage")) return true;
+
+  return false;
 }
 
 const QUOTA_MESSAGE =
-  "免費 API 額度已用完。請稍後再試，或前往 Google AI Studio 查看使用情況與升級選項。";
+  "Gemini API 免費額度已用完或觸發頻率限制。請稍後再試，或前往 Google AI Studio 查看使用量與升級選項。";
 
 export default function Home() {
   const [apiKeyInput, setApiKeyInput] = useState("");
@@ -256,7 +270,7 @@ ${
       return result.response.text();
     } catch (e: any) {
       // Quota/rate limit: do not retry, rethrow so caller can stop and prompt.
-      if (isQuotaExceeded(e)) throw e;
+      if (isGeminiQuotaExceeded(e)) throw e;
       // If model fails (e.g. 404), try to refresh model list once.
       const models = await listModels(key);
       const picked = pickModelFromList(models);
@@ -381,9 +395,9 @@ ${
           nextResults.push({ file, error: errMsg, outputFileName: undefined });
           setResults([...nextResults]);
 
-          if (isQuotaExceeded(err)) {
+          if (isGeminiQuotaExceeded(err)) {
             setError(QUOTA_MESSAGE);
-            setStatus("⚠️ 免費 API 額度已用完，已停止處理。");
+            setStatus("⚠️ Gemini API 額度／頻率限制，已停止處理。");
             break;
           }
         }
@@ -496,7 +510,7 @@ ${
             ) : null}
           </div>
           <p className="text-[11px] text-amber-600/90 border border-amber-200/60 rounded px-2 py-1.5 bg-amber-50/50">
-            ⚠️ 免費額度用盡時會自動停止處理並提示，可前往 Google AI Studio 查看使用量。
+            ⚠️ 若 Gemini API 觸發額度／頻率限制會自動停止並提示（僅辨識為 Google Gemini 錯誤時）。
           </p>
         </section>
 
