@@ -48,9 +48,15 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [detectRedBoxTick, setDetectRedBoxTick] = useState(false);
+  const [detectRedBoxTick, setDetectRedBoxTick] = useState(true);
 
   useEffect(() => {
+    const savedTick = window.localStorage.getItem(
+      "pdf_batch_renamer_detect_red_box_tick"
+    );
+    if (savedTick === "0" || savedTick === "false") setDetectRedBoxTick(false);
+    if (savedTick === "1" || savedTick === "true") setDetectRedBoxTick(true);
+
     const savedKey = window.localStorage.getItem("pdf_batch_renamer_api_key");
     if (savedKey) {
       setApiKeyInput(savedKey);
@@ -59,6 +65,13 @@ export default function Home() {
     const savedModel = window.localStorage.getItem("pdf_batch_renamer_model");
     if (savedModel) setResolvedModel(savedModel);
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      "pdf_batch_renamer_detect_red_box_tick",
+      detectRedBoxTick ? "1" : "0"
+    );
+  }, [detectRedBoxTick]);
 
   const listModels = async (apiKey: string) => {
     const res = await fetch(
@@ -214,7 +227,7 @@ export default function Home() {
 
     const tickBlock = options.detectRedBoxTick
       ? `
-4) 紅框勾選：表單上若有一排畫在紅框內的勾選格，由左至右依序為 A、B、C、D、E。請判斷哪一格內有打勾（✓、✔、V、剔號等）。若沒有任何一格明顯有勾選，或無此區塊，tickColumn 請填 null。
+4) 紅框勾選（tick）：表單上若有一排畫在紅色邊框內的勾選格／剔選格，由左至右依序為 A、B、C、D、E（共五格）。請仔細看哪一格內有手寫或列印的打勾記號（✓、✔、剔、V、圈選等）。只回傳被勾選的那一格對應的字母。若完全看不出有勾選、或此區塊不存在，tickColumn 請填 null。
 
 請嚴格只回傳 JSON（不要任何額外文字/Markdown）：
 {"date":"2025-12-22","fileNo":"ACQ68-42171","id":"151564","tickColumn":"A"}
