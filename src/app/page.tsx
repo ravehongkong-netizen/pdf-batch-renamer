@@ -14,6 +14,8 @@ type FileResult = {
   id?: string | null;
   tickColumn?: string | null;
   error?: string | null;
+  /** 寫入 ZIP 的檔名；處理失敗時可能為空 */
+  outputFileName?: string;
 };
 
 const DATE_REGEX = /\b\d{4}-\d{2}-\d{2}\b/;
@@ -369,13 +371,14 @@ ${
             error: hasAnyNA
               ? "部分欄位無法辨識，檔名已以 NA 代替。"
               : null,
+            outputFileName: newName,
           });
 
           setResults([...nextResults]);
         } catch (err: any) {
           console.error(err);
           const errMsg = err?.message ?? "未知錯誤";
-          nextResults.push({ file, error: errMsg });
+          nextResults.push({ file, error: errMsg, outputFileName: undefined });
           setResults([...nextResults]);
 
           if (isQuotaExceeded(err)) {
@@ -408,6 +411,29 @@ ${
     setStatus("READY");
     setError(null);
   }, []);
+
+  const downloadExcel = useCallback(() => {
+    if (!results.length) return;
+    void import("xlsx").then((XLSX) => {
+      const rows = results.map((r, idx) => ({
+        序號: idx + 1,
+        原始檔名: r.file.name,
+        新檔名: r.outputFileName ?? "",
+        服務日期: r.date ?? "NA",
+        檔案號碼: r.fileNo ?? "NA",
+        ID: r.id ?? "NA",
+        紅框勾選:
+          r.tickColumn !== undefined ? (r.tickColumn ?? "NA") : "（未啟用）",
+        辨識內容: r.text ?? "",
+        備註: r.error ?? "",
+      }));
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "辨識結果");
+      const stamp = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(wb, `pdf_batch_renamer_${stamp}.xlsx`);
+    });
+  }, [results]);
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-background px-4 py-8">
@@ -537,6 +563,15 @@ ${
                 📥 下載已改名 ZIP
               </a>
             )}
+            {!!results.length && (
+              <button
+                type="button"
+                onClick={downloadExcel}
+                className="inline-flex items-center justify-center rounded-md border border-blue-600 bg-background px-4 py-2 text-sm font-medium text-blue-700 shadow-sm hover:bg-blue-50"
+              >
+                📊 下載 Excel（檔案內容）
+              </button>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -564,6 +599,9 @@ ${
 
         <section className="rounded-xl border bg-card p-4 shadow-sm space-y-3">
           <h2 className="text-sm font-semibold">結果</h2>
+          <p className="text-xs text-muted-foreground">
+            可點「下載 Excel」匯出每份 PDF 的欄位與 Gemini 辨識全文（辨識內容欄）。
+          </p>
           <p className="text-xs text-muted-foreground">
             目標檔名：{"{date}_{fileNo}_{id}.pdf"}；任一項辨識不到則以{" "}
             <span className="font-mono">NA</span> 代替。若勾選紅框識別，檔名末尾為{" "}
