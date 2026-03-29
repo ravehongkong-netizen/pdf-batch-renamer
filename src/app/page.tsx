@@ -342,18 +342,22 @@ ${
             }
           }
 
-          const tickSuffix =
-            detectRedBoxTick && tickColumn ? `_${tickColumn}` : "";
+          const datePart = date ?? "NA";
+          const fileNoPart = fileNo ?? "NA";
+          const idPart = id ?? "NA";
+          const tickSuffix = detectRedBoxTick
+            ? `_${tickColumn ?? "NA"}`
+            : "";
 
-          let newName: string;
-          if (date && fileNo && id) {
-            newName = `${date}_${fileNo}_${id}${tickSuffix}.pdf`;
-          } else {
-            const base = file.name.replace(/\.pdf$/i, "");
-            newName = `${base}_UNPARSED${tickSuffix}.pdf`;
-          }
+          const newName = `${datePart}_${fileNoPart}_${idPart}${tickSuffix}.pdf`;
 
           zip.file(newName, file);
+
+          const hasAnyNA =
+            datePart === "NA" ||
+            fileNoPart === "NA" ||
+            idPart === "NA" ||
+            (detectRedBoxTick && tickColumn == null);
 
           nextResults.push({
             file,
@@ -362,10 +366,9 @@ ${
             fileNo,
             id,
             tickColumn: detectRedBoxTick ? tickColumn : undefined,
-            error:
-              date && fileNo && id
-                ? null
-                : "未能完整匹配到三個欄位（日期/檔案號碼/ID）。",
+            error: hasAnyNA
+              ? "部分欄位無法辨識，檔名已以 NA 代替。"
+              : null,
           });
 
           setResults([...nextResults]);
@@ -562,10 +565,11 @@ ${
         <section className="rounded-xl border bg-card p-4 shadow-sm space-y-3">
           <h2 className="text-sm font-semibold">結果</h2>
           <p className="text-xs text-muted-foreground">
-            正則：日期 YYYY-MM-DD，檔案號碼 ACQ\d+-\d+，ID \d{6}。
-            目標檔名：{"{date}_{fileNo}_{id}.pdf"}；若勾選紅框識別，則為{" "}
-            {"{date}_{fileNo}_{id}_{A|B|C|D|E}.pdf"}（例如：
-            2026-01-06_ACQ68-42200_151653_B.pdf）
+            目標檔名：{"{date}_{fileNo}_{id}.pdf"}；任一項辨識不到則以{" "}
+            <span className="font-mono">NA</span> 代替。若勾選紅框識別，檔名末尾為{" "}
+            <span className="font-mono">_A</span>～<span className="font-mono">_E</span>{" "}
+            或 <span className="font-mono">_NA</span>（例如：
+            2026-01-06_ACQ68-42200_151653_B.pdf 或 2026-01-06_NA_151653_NA.pdf）
           </p>
 
           {!results.length && (
@@ -592,13 +596,13 @@ ${
                     )}
                   </div>
                   <div className="mt-1 grid grid-cols-1 gap-1 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
-                    <span>日期：{r.date ?? "—"}</span>
-                    <span>檔案號碼：{r.fileNo ?? "—"}</span>
-                    <span>ID：{r.id ?? "—"}</span>
+                    <span>日期：{r.date ?? "NA"}</span>
+                    <span>檔案號碼：{r.fileNo ?? "NA"}</span>
+                    <span>ID：{r.id ?? "NA"}</span>
                     <span>
                       紅框勾選：{" "}
                       {r.tickColumn !== undefined
-                        ? r.tickColumn ?? "—"
+                        ? r.tickColumn ?? "NA"
                         : "（未啟用）"}
                     </span>
                   </div>
