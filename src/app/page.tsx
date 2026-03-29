@@ -29,6 +29,15 @@ function isQuotaExceeded(err: unknown): boolean {
   const nested = String(e?.error?.message ?? e?.response?.data?.error?.message ?? "").toLowerCase();
   const combined = `${msg} ${nested}`;
 
+  // 這些是「金鑰／權限／模型／設定」問題，不是額度用完，勿顯示額度提示
+  if (
+    /invalid.*api[_ ]?key|api[_ ]?key.*invalid|not a valid|must be valid|permission denied|PERMISSION_DENIED|forbidden|401|403|requested entity was not found|404|model.*not found|not enabled|has not been used|billing account|enable billing|payment method|GOOGLE_CLOUD_PROJECT/i.test(
+      combined
+    )
+  ) {
+    return false;
+  }
+
   const http =
     typeof e?.status === "number"
       ? e.status
@@ -51,9 +60,9 @@ function isQuotaExceeded(err: unknown): boolean {
     );
   }
 
-  // 僅在訊息明確與額度／頻率限制相關時才判定（避免其他 API 的無關錯誤被誤判）
+  // 勿用「billing」單獨判斷：Google 錯誤常含 billing 但實際是未開計費／專案設定，非「免費額度用完」
   const quotaHints =
-    /quota exceeded|exceeded your quota|rate limit exceeded|rate-limit|too many requests|resource exhausted|resource_exhausted|billing|payment required/i;
+    /quota exceeded|exceeded your quota|rate limit exceeded|rate-limit|too many requests|resource exhausted|resource_exhausted/i;
   return quotaHints.test(combined);
 }
 
